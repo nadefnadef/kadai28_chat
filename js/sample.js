@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js";
-import { getDatabase, ref, push, set, onValue } from "https://www.gstatic.com/firebasejs/10.13.1/firebase-database.js";
+import { getDatabase, ref, push, set, onValue, remove } from "https://www.gstatic.com/firebasejs/10.13.1/firebase-database.js";
 
 // Firebaseの設定
 const firebaseConfig = {
@@ -190,25 +190,46 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
-    // Firebaseから投稿を読み込む関数
+    // Firebaseから投稿を読み込む関数を修正
     function loadPostsFromFirebase() {
         const postsRef = ref(database, 'posts');
         onValue(postsRef, (snapshot) => {
             const posts = snapshot.val();
             if (posts) {
+                window.postsData = posts; // グローバル変数に保存
                 const tableBody = document.querySelector("#postsTable tbody");
                 tableBody.innerHTML = '';  // テーブルをクリア
-                Object.values(posts).reverse().forEach(post => addPostToTable(post));
+
+                // 投稿を配列に変換して逆順にソート
+                const postsArray = Object.entries(posts).sort((a, b) => {
+                    // dateプロパティで逆順ソート
+                    const dateA = new Date(a[1].date);
+                    const dateB = new Date(b[1].date);
+                    return dateB - dateA;
+                });
+
+                // 逆順にソートされた投稿をテーブルに追加
+                postsArray.forEach(([id, post]) => {
+                    addPostToTable(id, post);  // IDを渡す
+                });
             }
         }, (error) => {
             console.error("Error loading data: ", error);
         });
+    }    
+
+    // getPostById関数を追加
+    function getPostById(postId) {
+        return window.postsData ? window.postsData[postId] : null;
     }
 
     // 投稿をテーブルに追加する関数を修正
-    function addPostToTable(post) {
+    function addPostToTable(postId, post) {
         const tableBody = document.querySelector("#postsTable tbody");
         const row = document.createElement("tr");
+
+        // 行に投稿IDをデータ属性として保存
+        row.dataset.postId = postId;
 
         // 各セルにデータを追加
         row.appendChild(createCell(post.date));
@@ -254,17 +275,24 @@ document.addEventListener("DOMContentLoaded", function () {
         // 要救助者人数のセル
         row.appendChild(createCell(post.numberOfPeople || (post.unknownPeople ? '不明・複数' : '')));
 
-        // 削除ボタンのセル
-        const deleteCell = document.createElement("td");
-        const deleteButton = document.createElement("button");
-        deleteButton.textContent = "削除";
-        deleteButton.className = "delete-btn";
-        deleteButton.onclick = function() {
-            // 削除処理を実装する（後述）
-        };
-        deleteCell.appendChild(deleteButton);
-        row.appendChild(deleteCell);
+        // 削除ボタンと編集ボタンを同じセルに作成
+        const actionCell = row.insertCell();
 
+        // 削除ボタンの作成
+        const deleteButton = document.createElement('button');
+        deleteButton.textContent = '削除';
+        deleteButton.className = 'delete-btn';
+        deleteButton.addEventListener('click', () => deletePost(postId));  // IDを渡す
+        actionCell.appendChild(deleteButton);
+
+        // 編集ボタンの作成
+        const editButton = document.createElement('button');
+        editButton.textContent = '編集';
+        editButton.className = 'edit-btn';
+        editButton.addEventListener('click', () => editPost(row, postId));  // IDを渡す
+        actionCell.appendChild(editButton);
+
+        // 新しい行を表の先頭に挿入
         tableBody.insertBefore(row, tableBody.firstChild);
     }
 
@@ -348,70 +376,389 @@ document.addEventListener("DOMContentLoaded", function () {
         link.click();
     }
 
-    // 集計データを更新し、表を再描画する関数
+    const LOCATIONS = [
+        '相玉', '朝日町', '一丁目', '大賀茂', '河内', '敷根', '須崎', '高根', '立野', 
+        '田牛', '西中', '東本郷', '蓮台寺', '外ヶ岡', '六丁目'
+    ];
+
+    const INCIDENT_TYPES = ['要救助者あり', '家屋被害', 'インフラ被害', 'その他'];
+
     function updateSummaryTable() {
-        const posts = JSON.parse(localStorage.getItem('posts')) || [];
-        const summary = {};
+        const postsRef = ref(database, 'posts');
+        onValue(postsRef, (snapshot) => {
+            const posts = [];
+            snapshot.forEach((childSnapshot) => {
+                posts.push(childSnapshot.val());
+            });
 
-        posts.forEach(post => {
-            if (!summary[post.location]) {
-                summary[post.location] = {
-                    incidents: {},
-                    rescueNeeded: 0,
-                    unknownMultiple: 0
-                };
-            }
+            const summary = {};
+            const total = {
+                incidents: {
+                    '要救助者あり': 0,
+                    '家屋被害': 0,
+                    'インフラ被害': 0,
+                    'その他': 0
+                },
+                rescueNeeded: 0,
+                unknownMultiple: 0
+            };
 
-            if (!summary[post.location].incidents[post.incidentType]) {
-                summary[post.location].incidents[post.incidentType] = 0;
-            }
-            summary[post.location].incidents[post.incidentType]++;
+            // データ集計
+            posts.forEach(post => {
+                const location = post.area || '不明';
+                if (!summary[location]) {
+                    summary[location] = {
+                        incidents: {
+                            '要救助者あり': 0,
+                            '家屋被害': 0,
+                            'インフラ被害': 0,
+                            'その他': 0
+                        },
+                        rescueNeeded: 0,
+                        unknownMultiple: 0
+                    };
+                }
 
-            if (post.rescueNeeded === '不明・複数人') {
-                summary[post.location].unknownMultiple++;
-            } else {
-                summary[post.location].rescueNeeded += parseInt(post.rescueNeeded) || 0;
-            }
+                summary[location].incidents[post.incidentType]++;
+                total.incidents[post.incidentType]++;
+
+                if (post.incidentType === '要救助者あり') {
+                    if (post.numberOfPeople === '不明・複数人') {
+                        summary[location].unknownMultiple++;
+                        total.unknownMultiple++;
+                    } else {
+                        const rescueCount = parseInt(post.numberOfPeople) || 0;
+                        summary[location].rescueNeeded += rescueCount;
+                        total.rescueNeeded += rescueCount;
+                    }
+                }
+            });
+
+            // 表の生成
+            const container = document.getElementById('summaryTableContainer');
+            container.innerHTML = '';
+
+            const table = document.createElement('table');
+            table.className = 'summary-table';
+
+            // ヘッダー行の作成（発生場所）
+            const headerRow = table.insertRow();
+            headerRow.insertCell().textContent = ''; // 左上の空セル
+            [...LOCATIONS, '合計'].forEach(location => {
+                const th = document.createElement('th');
+                th.textContent = location;
+                headerRow.appendChild(th);
+            });
+
+            // データ行の作成
+            const rowData = [
+                { label: '要救助者あり', key: '要救助者あり' },
+                { label: '家屋被害', key: '家屋被害' },
+                { label: 'インフラ被害', key: 'インフラ被害' },
+                { label: 'その他', key: 'その他' },
+                { label: '要救助者人数', key: 'rescueNeeded' },
+                { label: '不明・複数人', key: 'unknownMultiple' }
+            ];
+
+            rowData.forEach(({ label, key }) => {
+                const row = table.insertRow();
+                row.insertCell().textContent = label;
+                [...LOCATIONS, '合計'].forEach(location => {
+                    const cell = row.insertCell();
+                    const data = location === '合計' ? total : (summary[location] || {
+                        incidents: { '要救助者あり': 0, '家屋被害': 0, 'インフラ被害': 0, 'その他': 0 },
+                        rescueNeeded: 0,
+                        unknownMultiple: 0
+                    });
+                    if (key in data.incidents) {
+                        cell.textContent = `${data.incidents[key]}件`;
+                    } else if (key === 'rescueNeeded') {
+                        cell.textContent = `${data[key]}人`;
+                    } else if (key === 'unknownMultiple') {
+                        cell.textContent = `${data[key]}件`;
+                    }
+                });
+            });
+
+            container.appendChild(table);
+        }, (error) => {
+            console.error("Error loading data for summary: ", error);
         });
-
-        const container = document.getElementById('summaryTableContainer');
-        container.innerHTML = '';
-
-        const table = document.createElement('table');
-        table.className = 'summary-table';
-
-        // ヘッダー行の作成
-        const headerRow = table.insertRow();
-        ['発生場所', '事態種別', '要救助者人数', '不明・複数人'].forEach(text => {
-            const th = document.createElement('th');
-            th.textContent = text;
-            headerRow.appendChild(th);
-        });
-
-        // データ行の作成
-        for (const [location, data] of Object.entries(summary)) {
-            const row = table.insertRow();
-            row.insertCell().textContent = location;
-            row.insertCell().textContent = Object.entries(data.incidents)
-                .map(([type, count]) => `${type}: ${count}`)
-                .join(', ');
-            row.insertCell().textContent = data.rescueNeeded;
-            row.insertCell().textContent = data.unknownMultiple;
-        }
-
-        container.appendChild(table);
-    }
-
-    // 既存の投稿追加関数を修正
-    function addPost(post) {
-        // ... 既存のコード ...
-
-        updateSummaryTable(); // 集計表を更新
     }
 
     // 初期表示時に集計表を生成
     updateSummaryTable();
 });
+
+// グローバルスコープで関数を定義
+window.deletePost = function(postId) {
+    const postRef = ref(database, `posts/${postId}`);
+    remove(postRef).then(() => {
+        console.log(`Post with ID ${postId} deleted successfully`);
+        loadPostsFromFirebase();  // 更新後のデータを再読み込み
+    }).catch((error) => {
+        console.error("Error deleting post: ", error);
+    });
+}
+
+window.editPost = function(row, postId) {
+    const post = getPostById(postId);
+    if (!post) return;
+
+    // フォームに投稿データをセット
+    document.getElementById("katakanaName").value = post.katakanaName || '';
+    document.getElementById("kanjiName").value = post.kanjiName || '';
+    document.getElementById("organization").value = post.organization || '';
+    document.getElementById("department").value = post.department || '';
+    document.getElementById("position").value = post.position || '';
+    document.getElementById("phone").value = post.phone || '';
+    document.getElementById("email").value = post.email || '';
+    document.getElementById("landmark").value = post.landmark || '';
+    document.getElementById("incidentType").value = post.incidentType || '';
+    document.getElementById("area").value = post.area || '';
+    document.getElementById("address").value = post.address || '';
+    document.getElementById("mapLink").value = post.mapLink || '';
+    document.getElementById("memo").value = post.memo || '';
+    
+    if (post.numberOfPeople === '不明・複数人') {
+        document.getElementById("unknownPeople").checked = true;
+        document.getElementById("peopleCount").value = '';
+        document.getElementById("peopleCount").disabled = true;
+    } else {
+        document.getElementById("unknownPeople").checked = false;
+        document.getElementById("peopleCount").value = post.numberOfPeople || '';
+        document.getElementById("peopleCount").disabled = false;
+    }
+
+    // 画像データの表示と設定
+    const photoInput = document.getElementById("photo");
+    const photoPreview = document.getElementById("photoPreview") || document.createElement("img");
+    photoPreview.id = "photoPreview";
+    photoPreview.style.maxWidth = "200px";
+    photoPreview.style.marginTop = "10px";
+    
+    if (post.photo) {
+        photoPreview.src = post.photo;
+        photoInput.parentNode.insertBefore(photoPreview, photoInput.nextSibling);
+        
+        // Base64データをBlobに変換
+        fetch(post.photo)
+            .then(res => res.blob())
+            .then(blob => {
+                // BlobからFileオブジェクトを作成
+                const fileName = `image_${postId}.jpg`; // 適切なファイル名を設定
+                const file = new File([blob], fileName, { type: "image/jpeg" });
+                
+                // FileListオブジェクトを作成
+                const dataTransfer = new DataTransfer();
+                dataTransfer.items.add(file);
+                photoInput.files = dataTransfer.files;
+                
+                // 必須項目として設定
+                photoInput.required = true;
+            });
+    } else {
+        if (photoPreview.parentNode) {
+            photoPreview.parentNode.removeChild(photoPreview);
+        }
+        photoInput.required = true;
+    }
+
+    // フォームを表示
+    const formContainer = document.querySelector(".form-container");
+    formContainer.style.display = "block";
+
+    // 編集実行ボタンと戻るボタンを表示
+    const form = document.getElementById("emergencyForm");
+    const submitBtn = document.getElementById("submitBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    
+    submitBtn.style.display = "none";
+    clearBtn.style.display = "none";
+    
+    let editExecuteBtn = document.getElementById("editExecuteBtn");
+    let backBtn = document.getElementById("backBtn");
+    
+    if (!editExecuteBtn) {
+        editExecuteBtn = document.createElement('button');
+        editExecuteBtn.id = "editExecuteBtn";
+        editExecuteBtn.textContent = "編集実行";
+        editExecuteBtn.style.backgroundColor = "green";
+        editExecuteBtn.style.color = "white";
+        editExecuteBtn.style.padding = "10px 20px";
+        editExecuteBtn.style.border = "none";
+        editExecuteBtn.style.borderRadius = "5px";
+        editExecuteBtn.style.cursor = "pointer";
+        form.appendChild(editExecuteBtn);
+    }
+    
+    if (!backBtn) {
+        backBtn = document.createElement('button');
+        backBtn.id = "backBtn";
+        backBtn.textContent = "戻る";
+        backBtn.style.backgroundColor = "red";
+        backBtn.style.color = "white";
+        backBtn.style.padding = "10px 20px";
+        backBtn.style.border = "none";
+        backBtn.style.borderRadius = "5px";
+        backBtn.style.cursor = "pointer";
+        backBtn.style.marginLeft = "10px";
+        form.appendChild(backBtn);
+    }
+
+    // 戻るボタンの処理
+    backBtn.onclick = function () {
+        formContainer.style.display = "none";
+        form.reset();
+        submitBtn.style.display = "inline-block";
+        clearBtn.style.display = "inline-block";
+        editExecuteBtn.style.display = "none";
+        backBtn.style.display = "none";
+        if (photoPreview.parentNode) {
+            photoPreview.parentNode.removeChild(photoPreview);
+        }
+    };
+
+    // 編集実行ボタンの処理
+    editExecuteBtn.onclick = async function () {
+        const editedData = await getFormData();
+        editedData.editDate = new Date().toLocaleString();
+        editedData.original = post; // 元のデータを保存
+
+        // 画像が変更されていない場合、元の画像データを使用
+        if (!editedData.photo && post.photo) {
+            editedData.photo = post.photo;
+        }
+
+        try {
+            await set(ref(database, `posts/${postId}`), editedData);
+            loadPostsFromFirebase();
+            form.reset();
+            formContainer.style.display = "none";
+            submitBtn.style.display = "inline-block";
+            clearBtn.style.display = "inline-block";
+            editExecuteBtn.style.display = "none";
+            backBtn.style.display = "none";
+            if (photoPreview.parentNode) {
+                photoPreview.parentNode.removeChild(photoPreview);
+            }
+        } catch (error) {
+            console.error("Error while editing the post:", error);
+        }
+    };
+
+    // 新しい画像が選択された時のプレビュー更新
+    photoInput.addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                photoPreview.src = e.target.result;
+                if (!photoPreview.parentNode) {
+                    photoInput.parentNode.insertBefore(photoPreview, photoInput.nextSibling);
+                }
+            }
+            reader.readAsDataURL(file);
+        } else {
+            if (photoPreview.parentNode) {
+                photoPreview.parentNode.removeChild(photoPreview);
+            }
+        }
+    });
+}
+
+// getFormData関数の修正（画像が選択されていない場合の処理を追加）
+async function getFormData() {
+    const photoFile = document.getElementById("photo").files[0];
+    let photoBase64 = null;
+
+    if (photoFile) {
+        photoBase64 = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                resolve(e.target.result);
+            };
+            reader.readAsDataURL(photoFile);
+        });
+    }
+
+    function extractLatLngFromMapLink(mapLink) {
+        const regex = /@(-?\d+\.\d+),(-?\d+\.\d+)/;
+        const match = mapLink.match(regex);
+        return match ? `${match[1]}, ${match[2]}` : '';
+    }
+
+    const mapLink = document.getElementById("mapLink").value;
+    const latLng = extractLatLngFromMapLink(mapLink);
+
+    return {
+        date: new Date().toLocaleString(),
+        katakanaName: document.getElementById("katakanaName").value,
+        kanjiName: document.getElementById("kanjiName").value,
+        organization: document.getElementById("organization").value,
+        department: document.getElementById("department").value,
+        position: document.getElementById("position").value,
+        phone: document.getElementById("phone").value,
+        email: document.getElementById("email").value,
+        landmark: document.getElementById("landmark").value,
+        incidentType: document.getElementById("incidentType").value,
+        area: document.getElementById("area").value,
+        address: document.getElementById("address").value,
+        mapLink: mapLink,
+        latLng: latLng,
+        photo: photoBase64,
+        memo: document.getElementById("memo").value,
+        numberOfPeople: unknownPeopleCheckbox.checked ? "不明・複数人" : document.getElementById("peopleCount").value
+    };
+}
+
+function getPostById(postId) {
+    return window.postsData ? window.postsData[postId] : null;
+}
+
+// addPostToTable関数内、投稿日時の表示部分
+row.appendChild(createCell(post.date));
+
+// 編集日時の表示
+if (post.editDate) {
+    const editDateCell = document.createElement("span");
+    editDateCell.textContent = ` (編集: ${post.editDate})`;
+    editDateCell.style.color = "blue";
+    editDateCell.style.textDecoration = "underline";
+    editDateCell.style.cursor = "pointer";
+
+    editDateCell.addEventListener('click', () => {
+        toggleEditHistory(row, postId);
+    });
+
+    row.lastChild.appendChild(editDateCell);
+}
+
+// 編集履歴を表示する関数
+function toggleEditHistory(row, postId) {
+    const post = getPostById(postId);
+    if (!post) return;
+
+    const isShowingHistory = row.classList.contains('showing-history');
+    if (isShowingHistory) {
+        row.querySelectorAll('.history').forEach(element => element.remove());
+        row.classList.remove('showing-history');
+    } else {
+        for (let [key, value] of Object.entries(post)) {
+            if (value !== post.original[key]) { // 編集されたフィールドのみ
+                const historyCell = document.createElement('td');
+                historyCell.className = 'history';
+                historyCell.textContent = `元: ${post.original[key] || ''}`;
+                historyCell.style.backgroundColor = '#f0f0f0';
+                row.appendChild(historyCell);
+            }
+        }
+        row.classList.add('showing-history');
+    }
+}
+
+
+
 
 
 
