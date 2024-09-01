@@ -13,12 +13,19 @@
 
     <main>
         <div class="button-container">
-            <button id="csvExportBtn" class="csv-export-button">CSV抽出</button>
             <button class="toggle-form-button">新規被害について投稿する</button>
         </div>
 
-        <!-- 新しい集計表のコンテナ -->
-        <div id="summaryTableContainer"></div>
+        <!-- 集計表のコンテナ -->
+        <div id="summaryContainer">
+            <h2 id="summaryTitle">下田市被害投稿集計表</h2>
+            <div id="summaryTableContainer"></div>
+        </div>
+
+        <!-- CSV抽出ボタンを左端に配置するためのコンテナ -->
+        <div class="button-container left-align">
+            <button id="csvExportBtn" class="csv-export-button">CSV抽出</button>
+        </div>
 
         <!-- フォームをここに移動 -->
         <div class="form-container" style="display: none;">
@@ -147,3 +154,4 @@
    
 </body>
 </html>
+
